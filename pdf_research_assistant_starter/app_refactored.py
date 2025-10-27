@@ -22,32 +22,27 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# Configure logging first
+# Import mode modules
+try:
+    from chat_mode import get_chat_mode, ChatModeError
+    from document_mode import get_document_mode, DocumentModeError
+    from ingestion import ingest_documents, get_ingestion_stats, clear_vector_store, DocumentIngestionError, compute_file_hash
+except ImportError as e:
+    st.error(f"Failed to import required modules: {str(e)}")
+    st.stop()
+
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# Import mode modules
-try:
-    from chat_mode import get_chat_mode, ChatModeError
-    from document_mode import get_document_mode, DocumentModeError
-    from ingestion import ingest_documents, get_ingestion_stats, clear_vector_store, DocumentIngestionError, compute_file_hash
-    from chromadb_manager import get_chromadb_manager
-    CHROMADB_MANAGER_AVAILABLE = True
-except ImportError as e:
-    if "chromadb_manager" not in str(e):
-        st.error(f"Failed to import required modules: {str(e)}")
-        st.stop()
-    CHROMADB_MANAGER_AVAILABLE = False
-    logger.warning("ChromaDB manager not available")
-
 # Constants
 MAX_FILES = 5
 MAX_TOTAL_SIZE_MB = 50
 MAX_TOTAL_SIZE_BYTES = MAX_TOTAL_SIZE_MB * 1024 * 1024
-SUPPORTED_FORMATS = ["pdf", "txt", "xlsx", "xls", "csv", "xlsm"]
+SUPPORTED_FORMATS = ["pdf", "txt"]
 
 # Page configuration
 st.set_page_config(
@@ -102,65 +97,6 @@ st.markdown("""
         box-shadow: 0 10px 30px rgba(102, 126, 234, 0.3);
         font-size: 1.1rem;
         line-height: 1.8;
-    }
-    
-    /* ENHANCED: No files uploaded message - highly visible in both themes */
-    .no-files-message {
-        background: linear-gradient(135deg, #FF6B6B 0%, #FF8E53 100%);
-        color: white !important;
-        padding: 2rem 2.5rem;
-        border-radius: 16px;
-        text-align: center;
-        margin: 2rem auto;
-        max-width: 650px;
-        box-shadow: 0 10px 30px rgba(255, 107, 107, 0.4);
-        font-size: 1.3rem;
-        font-weight: 700;
-        line-height: 1.8;
-        border: 3px solid rgba(255, 255, 255, 0.3);
-    }
-    
-    .no-files-message p {
-        color: white !important;
-        margin: 0;
-        text-shadow: 0 2px 4px rgba(0,0,0,0.2);
-    }
-    
-    /* ADDED: Status indicators for visual feedback */
-    .status-ready {
-        background: #10b981;
-        color: white;
-        padding: 0.5rem 1rem;
-        border-radius: 8px;
-        display: inline-block;
-        font-weight: 600;
-        margin: 0.5rem 0;
-    }
-    
-    .status-processing {
-        background: #f59e0b;
-        color: white;
-        padding: 0.5rem 1rem;
-        border-radius: 8px;
-        display: inline-block;
-        font-weight: 600;
-        margin: 0.5rem 0;
-        animation: pulse 2s infinite;
-    }
-    
-    .status-error {
-        background: #ef4444;
-        color: white;
-        padding: 0.5rem 1rem;
-        border-radius: 8px;
-        display: inline-block;
-        font-weight: 600;
-        margin: 0.5rem 0;
-    }
-    
-    @keyframes pulse {
-        0%, 100% { opacity: 1; }
-        50% { opacity: 0.7; }
     }
     
     .upload-info strong {
@@ -226,23 +162,12 @@ def initialize_session_state():
     if 'current_doc_hash' not in st.session_state:
         st.session_state.current_doc_hash = None
     
-    # OPTIMIZATION: Track processed files to skip re-embedding
-    if 'processed_files' not in st.session_state:
-        st.session_state.processed_files = {}  # {file_hash: filename}
-    
     # UI preferences
     if 'show_sources' not in st.session_state:
         st.session_state.show_sources = True
     
     if 'detail_level' not in st.session_state:
-        st.session_state.detail_level = 'detailed'  # Default to detailed mode
-    
-    # ADDED: Intent tracking for context awareness
-    if 'last_intent' not in st.session_state:
-        st.session_state.last_intent = None
-    
-    if 'last_mode' not in st.session_state:
-        st.session_state.last_mode = None
+        st.session_state.detail_level = 'auto'
 
 
 def validate_environment() -> bool:
@@ -307,10 +232,8 @@ def render_mode_selector():
     # Update mode if changed
     new_mode = mode_options[mode_selection]
     if new_mode != st.session_state.mode:
-        old_mode = st.session_state.mode
         st.session_state.mode = new_mode
-        st.session_state.last_mode = old_mode
-        logger.info(f"Mode switched: {old_mode} → {new_mode}")
+        logger.info(f"Mode switched to: {new_mode}")
         st.rerun()
 
 
@@ -337,19 +260,21 @@ def render_sidebar():
     with st.sidebar:
         st.markdown("## ⚙️ Settings")
         
-        # ENHANCED: Response Detail Level toggle (Brief vs Detailed)
-        st.markdown("### 📝 Response Detail Level")
+        # Detail level control
+        st.markdown("### Response Style")
         detail_options = {
-            'Brief (Concise)': 'brief',
-            'Detailed (Default)': 'detailed'
+            'Auto (Adaptive)': 'auto',
+            'Brief': 'brief',
+            'Detailed': 'detailed'
         }
         
-        detail_selection = st.radio(
-            "Choose response style:",
+        detail_label = [k for k, v in detail_options.items() if v == st.session_state.detail_level][0]
+        
+        detail_selection = st.selectbox(
+            "Response Detail Level",
             options=list(detail_options.keys()),
             index=list(detail_options.values()).index(st.session_state.detail_level),
-            help="Brief: Max 4 sentences | Detailed: Comprehensive research-grade answers (≥2000 tokens)",
-            horizontal=False
+            help="Auto adapts to query complexity, Brief for concise answers, Detailed for comprehensive analysis"
         )
         st.session_state.detail_level = detail_options[detail_selection]
         
@@ -359,17 +284,27 @@ def render_sidebar():
         if st.session_state.mode == 'document':
             st.markdown("## 📁 Document Upload")
             
-            # AUTO-PROCESSING: File uploader with on_change callback
             uploaded_files = st.file_uploader(
-                label="Upload Documents (PDF/TXT/Excel/CSV)",
+                label="Upload Documents (PDF/TXT)",
                 type=SUPPORTED_FORMATS,
                 accept_multiple_files=True,
-                help=f"Upload up to {MAX_FILES} files, max {MAX_TOTAL_SIZE_MB}MB total\n\n✨ Documents process automatically on upload!\n\n📊 Supports: PDF, TXT, Excel (.xlsx, .xls), CSV",
-                key="document_uploader",
-                on_change=auto_process_documents  # AUTO-PROCESS ON UPLOAD
+                help=f"Upload up to {MAX_FILES} files, maximum {MAX_TOTAL_SIZE_MB}MB total",
+                key="document_uploader"
             )
             
-            # NO PROCESS BUTTON - auto-processing handles it!
+            if uploaded_files:
+                # Validate upload
+                if len(uploaded_files) > MAX_FILES:
+                    st.error(f"❌ Too many files. Maximum: {MAX_FILES}")
+                else:
+                    total_size = sum(f.size for f in uploaded_files)
+                    if total_size > MAX_TOTAL_SIZE_BYTES:
+                        st.error(f"❌ Total size too large: {format_file_size(total_size)} (limit: {MAX_TOTAL_SIZE_MB}MB)")
+                    else:
+                        st.success(f"✅ {len(uploaded_files)} file(s) validated ({format_file_size(total_size)})")
+                        
+                        if st.button("🚀 Process Documents", use_container_width=True):
+                            process_documents(uploaded_files)
             
             st.markdown("---")
             
@@ -386,32 +321,6 @@ def render_sidebar():
                         value=st.session_state.show_sources,
                         help="Display document chunks used for answers"
                     )
-                    
-                    # Database Health Tools
-                    if CHROMADB_MANAGER_AVAILABLE:
-                        st.markdown("---")
-                        st.markdown("### 🔧 Database Tools")
-                        
-                        col1, col2 = st.columns(2)
-                        
-                        with col1:
-                            if st.button("🏥 Check Health", help="Verify database integrity"):
-                                manager = get_chromadb_manager()
-                                stats = manager.get_collection_stats()
-                                if stats.get('healthy', False):
-                                    st.success(f"✅ Healthy\n{stats['count']} docs")
-                                else:
-                                    st.warning(f"⚠️ Issues detected\n{stats.get('error', 'Unknown error')}")
-                        
-                        with col2:
-                            if st.button("🔄 Rebuild Index", help="Fix database errors"):
-                                with st.spinner("Rebuilding..."):
-                                    manager = get_chromadb_manager()
-                                    manager.rebuild_index()
-                                    st.success("✅ Rebuilt! Re-upload documents.")
-                                    st.rerun()
-                    
-                    st.markdown("---")
                     
                     if st.button("🗑️ Clear Documents", help="Remove all uploaded documents"):
                         clear_vector_store()
@@ -452,82 +361,67 @@ def render_sidebar():
                 st.rerun()
 
 
-
-
-def auto_process_documents():
-    """
-    AUTO-PROCESSING: Callback triggered when files are uploaded.
-    Automatically processes documents without requiring button click.
-    """
-    uploaded_files = st.session_state.get('document_uploader', None)
-    
-    if not uploaded_files or len(uploaded_files) == 0:
-        return
-    
-    # Validate upload
-    if len(uploaded_files) > MAX_FILES:
-        st.error(f"❌ Too many files. Maximum: {MAX_FILES}")
-        return
-    
-    total_size = sum(f.size for f in uploaded_files)
-    if total_size > MAX_TOTAL_SIZE_BYTES:
-        st.error(f"❌ Total size too large: {format_file_size(total_size)} (limit: {MAX_TOTAL_SIZE_MB}MB)")
-        return
-    
-    # Process immediately
-    process_documents(uploaded_files)
-
-
 def process_documents(uploaded_files: List):
-    """Process uploaded documents for Document Mode with AUTO-PROCESSING."""
+    """Process uploaded documents for Document Mode."""
     try:
         session_doc_hash = st.session_state.get('current_doc_hash', None)
         
-        # Compute hash
-        current_hash = compute_file_hash(uploaded_files)
-        
-        # OPTIMIZATION: Check if already processed
-        if session_doc_hash and session_doc_hash == current_hash:
-            # Already processed - silently use cache
-            logger.info(f"✅ Files already processed (hash: {current_hash[:8]}...)")
-            return
-        
-        # Additional check: individual file tracking
-        if current_hash in st.session_state.processed_files:
-            logger.info(f"✅ Using cached embeddings for: {st.session_state.processed_files[current_hash]}")
-            st.session_state.current_doc_hash = current_hash
-            return
-        
-        # Show processing indicator
-        with st.spinner("🔄 Auto-processing documents..."):
+        with st.spinner("🔄 Processing documents..."):
             progress_bar = st.progress(0)
             status_text = st.empty()
             
-            status_text.text("📄 Extracting text from documents...")
-            progress_bar.progress(25)
+            status_text.text("Checking for changes...")
+            progress_bar.progress(15)
+            
+            # Compute hash
+            current_hash = compute_file_hash(uploaded_files)
+            
+            if session_doc_hash and session_doc_hash == current_hash:
+                status_text.text("Documents unchanged - using cache...")
+                progress_bar.progress(100)
+                time.sleep(0.5)
+                progress_bar.empty()
+                status_text.empty()
+                
+                st.markdown("""
+                <div class="success-container">
+                    ✅ <strong>Documents already processed!</strong><br>
+                    Using cached embeddings from previous upload.
+                </div>
+                """, unsafe_allow_html=True)
+                return
+            
+            status_text.text("Extracting text...")
+            progress_bar.progress(35)
             
             total_chunks, files_processed, doc_hash = ingest_documents(uploaded_files, session_doc_hash)
             st.session_state.current_doc_hash = doc_hash
             
-            # Track processed files
-            filenames = ", ".join([f.name for f in uploaded_files])
-            st.session_state.processed_files[doc_hash] = filenames
-            logger.info(f"📝 Cached embeddings: {filenames} (hash: {doc_hash[:8]}...)")
-            
-            progress_bar.progress(75)
-            status_text.text("✨ Creating embeddings and indexing...")
+            progress_bar.progress(90)
+            status_text.text("Finalizing...")
             
             progress_bar.progress(100)
-            time.sleep(0.3)
             progress_bar.empty()
             status_text.empty()
-        
-        # Show success message
-        st.success(f"✅ **Documents processed successfully!** {files_processed} file(s), {total_chunks} chunks indexed. Ready for Q&A!")
-        
+            
+            change_indicator = "🔄 Updated" if session_doc_hash else "✨ New"
+            
+            st.markdown(f"""
+            <div class="success-container">
+                ✅ <strong>{change_indicator} - Processing complete!</strong><br>
+                📄 Files: {files_processed} | 🔢 Chunks: {total_chunks}<br>
+                🎯 Ready for document-based Q&A!
+            </div>
+            """, unsafe_allow_html=True)
+            
     except Exception as e:
         logger.error(f"Document processing failed: {str(e)}")
-        st.error(f"❌ **Processing failed:** {str(e)}")
+        st.markdown(f"""
+        <div class="error-container">
+            ❌ <strong>Processing failed</strong><br>
+            {str(e)}
+        </div>
+        """, unsafe_allow_html=True)
 
 
 def handle_chat_mode():
@@ -605,33 +499,24 @@ def handle_document_mode():
         has_documents = False
     
     if not has_documents:
-        # Clear "No files uploaded" message
         st.markdown("""
-        <div class="no-files-message">
-            <p><strong>📄 NO DOCUMENTS UPLOADED</strong></p>
-            <div style="margin-top: 1.2rem; font-size: 1.1rem;">
-                Upload PDF or TXT files using the sidebar to begin!
+        <div class="upload-info">
+            <strong>📄 No Documents Uploaded</strong>
+            <div style="margin-top: 1rem;">
+                Upload PDF or TXT files using the sidebar<br>
+                <span style="font-size: 0.9rem; opacity: 0.9;">Maximum 5 files, 50MB total</span>
             </div>
-            <div style="margin-top: 1rem; font-size: 0.95rem; opacity: 0.95;">
-                📁 Maximum: 5 files, 50MB total<br>
-                ✨ Documents process automatically on upload
-            </div>
-            <div style="margin-top: 1.5rem; font-size: 1rem; font-weight: 600;">
-                👈 Use the sidebar to get started!
+            <div style="margin-top: 1.5rem; font-size: 0.95rem; opacity: 0.85;">
+                👈 Use the sidebar to get started with Document Mode
             </div>
         </div>
         """, unsafe_allow_html=True)
         return
     
     st.markdown("### 📚 Document Q&A")
+    st.caption(f"📊 {stats['total_files']} document(s) loaded | {stats['total_chunks']} chunks indexed")
     
-    # Status indicator
-    if stats['total_chunks'] > 0:
-        st.markdown('<div class="status-ready">🟢 Ready for Questions</div>', unsafe_allow_html=True)
-    
-    st.caption(f"📊 {stats['total_files']} document(s) | {stats['total_chunks']} chunks")
-    
-    # Display chat history
+    # Display document mode history
     for message in st.session_state.doc_mode_history:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
@@ -643,7 +528,7 @@ def handle_document_mode():
                         for i, source in enumerate(message["sources"], 1):
                             metadata = source.get('metadata', {})
                             similarity = source.get('similarity', 0.0)
-                            st.caption(f"**[Source {i}]**: {metadata.get('source', 'Unknown')} (Relevance: {similarity:.2f})")
+                            st.caption(f"**[Source {i}]**: {metadata.get('source', 'Unknown')} (Chunk {metadata.get('chunk_index', 'N/A')}, Relevance: {similarity:.2f})")
                             st.code(source.get('content', '')[:400] + "...")
     
     # Chat input
@@ -683,22 +568,11 @@ def handle_document_mode():
                 
                 response_placeholder.markdown(full_response)
                 
-                # Track intent
-                intent = metadata.get('intent', 'document_query')
-                st.session_state.last_intent = intent
-                st.session_state.last_mode = 'document'
-                
-                # Show metadata
+                # Show metadata if successful
                 if not metadata.get('error'):
                     chunks_retrieved = metadata.get('chunks_retrieved', 0)
                     detail_level = metadata.get('detail_level', 'auto')
-                    retrieval_skipped = metadata.get('retrieval_skipped', False)
-                    
-                    # Clear feedback based on intent
-                    if retrieval_skipped:
-                        st.caption("💬 Chat message — no document search")
-                    else:
-                        st.caption(f"📚 Retrieved {chunks_retrieved} chunks | {detail_level.capitalize()}")
+                    st.caption(f"📚 Document Mode | Retrieved {chunks_retrieved} chunks | {detail_level.capitalize()} response")
                 
                 # Save to history
                 st.session_state.doc_mode_history.append({
@@ -708,11 +582,11 @@ def handle_document_mode():
                 })
                 
             except DocumentModeError as e:
-                error_msg = f"❌ Error: {str(e)}"
+                error_msg = f"❌ Document Mode error: {str(e)}"
                 st.error(error_msg)
                 st.session_state.doc_mode_history.append({"role": "assistant", "content": error_msg, "sources": []})
             except Exception as e:
-                logger.error(f"Unexpected error: {str(e)}")
+                logger.error(f"Unexpected error in Document Mode: {str(e)}")
                 logger.error(traceback.format_exc())
                 error_msg = "❌ An unexpected error occurred. Please try again."
                 st.error(error_msg)

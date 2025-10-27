@@ -22,6 +22,7 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 import streamlit as st
 from dotenv import load_dotenv
 from openai import OpenAI
+import pandas as pd
 
 # Load environment variables
 load_dotenv()
@@ -33,13 +34,38 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Constants
-CHUNK_SIZE = int(os.getenv('CHUNK_SIZE', 1000))
-CHUNK_OVERLAP = int(os.getenv('CHUNK_OVERLAP', 100))
+# Import ChromaDB manager
+try:
+    from chromadb_manager import get_chromadb_manager, ChromaDBManager, is_large_file
+    CHROMADB_MANAGER_AVAILABLE = True
+    logger.info("ChromaDB manager module loaded successfully")
+except ImportError as e:
+    logger.warning(f"ChromaDB manager not available: {str(e)}")
+    CHROMADB_MANAGER_AVAILABLE = False
+
+# Import structured data parser
+try:
+    from structured_data_parser import (
+        is_structured_data_file,
+        parse_structured_file,
+        clean_dataframe,
+        dataframe_to_markdown,
+        get_structured_data_summary,
+        StructuredDataError
+    )
+    STRUCTURED_DATA_AVAILABLE = True
+    logger.info("Structured data parser module loaded successfully")
+except ImportError as e:
+    logger.warning(f"Structured data parser not available: {str(e)}")
+    STRUCTURED_DATA_AVAILABLE = False
+
+# Constants - OPTIMIZED for better retrieval
+CHUNK_SIZE = int(os.getenv('CHUNK_SIZE', 1500))  # Increased for richer context
+CHUNK_OVERLAP = int(os.getenv('CHUNK_OVERLAP', 200))  # Added overlap for continuity
 MAX_RETRIES = 3
 COLLECTION_NAME = "document_chunks"
 CHROMADB_PERSIST_DIR = ".chromadb"
-SUPPORTED_FILE_TYPES = ['.pdf', '.txt']
+SUPPORTED_FILE_TYPES = ['.pdf', '.txt', '.xlsx', '.xls', '.csv', '.xlsm']
 
 
 class DocumentIngestionError(Exception):
@@ -50,7 +76,7 @@ class DocumentIngestionError(Exception):
 @st.cache_resource
 def get_chromadb_client() -> chromadb.Client:
     """
-    Get or create a ChromaDB client instance with persistent storage.
+    Get or create a ChromaDB client instance with fault-tolerant initialization.
     
     Returns:
         chromadb.Client: Configured ChromaDB client instance
@@ -58,19 +84,28 @@ def get_chromadb_client() -> chromadb.Client:
     Raises:
         DocumentIngestionError: If ChromaDB client creation fails
     """
-    try:
-        client = chromadb.PersistentClient(path=CHROMADB_PERSIST_DIR)
-        logger.info(f"ChromaDB client initialized with persist directory: {CHROMADB_PERSIST_DIR}")
-        return client
-    except Exception as e:
-        logger.error(f"Failed to initialize ChromaDB client: {str(e)}")
-        raise DocumentIngestionError(f"Database initialization failed: {str(e)}")
+    if CHROMADB_MANAGER_AVAILABLE:
+        try:
+            manager = get_chromadb_manager()
+            return manager.get_client()
+        except Exception as e:
+            logger.error(f"ChromaDB manager initialization failed: {str(e)}")
+            raise DocumentIngestionError(f"Database initialization failed: {str(e)}")
+    else:
+        # Fallback to direct initialization
+        try:
+            client = chromadb.PersistentClient(path=CHROMADB_PERSIST_DIR)
+            logger.info(f"ChromaDB client initialized with persist directory: {CHROMADB_PERSIST_DIR}")
+            return client
+        except Exception as e:
+            logger.error(f"Failed to initialize ChromaDB client: {str(e)}")
+            raise DocumentIngestionError(f"Database initialization failed: {str(e)}")
 
 
 @st.cache_resource
 def get_collection() -> chromadb.Collection:
     """
-    Get or create the document chunks collection in ChromaDB.
+    Get or create the document chunks collection with fault tolerance.
     
     Returns:
         chromadb.Collection: The document chunks collection
@@ -78,14 +113,23 @@ def get_collection() -> chromadb.Collection:
     Raises:
         DocumentIngestionError: If collection creation fails
     """
-    try:
-        client = get_chromadb_client()
-        collection = client.get_or_create_collection(name=COLLECTION_NAME)
-        logger.info(f"Collection '{COLLECTION_NAME}' initialized successfully")
-        return collection
-    except Exception as e:
-        logger.error(f"Failed to initialize collection: {str(e)}")
-        raise DocumentIngestionError(f"Collection initialization failed: {str(e)}")
+    if CHROMADB_MANAGER_AVAILABLE:
+        try:
+            manager = get_chromadb_manager()
+            return manager.get_collection()
+        except Exception as e:
+            logger.error(f"Failed to get collection from manager: {str(e)}")
+            raise DocumentIngestionError(f"Collection initialization failed: {str(e)}")
+    else:
+        # Fallback to direct initialization
+        try:
+            client = get_chromadb_client()
+            collection = client.get_or_create_collection(name=COLLECTION_NAME)
+            logger.info(f"Collection '{COLLECTION_NAME}' initialized successfully")
+            return collection
+        except Exception as e:
+            logger.error(f"Failed to initialize collection: {str(e)}")
+            raise DocumentIngestionError(f"Collection initialization failed: {str(e)}")
 
 
 def validate_environment() -> None:
@@ -252,6 +296,107 @@ def extract_text_from_txt(txt_file: BinaryIO, filename: str) -> str:
         logger.error(f"Unexpected error extracting text from '{filename}': {str(e)}")
         logger.error(traceback.format_exc())
         raise DocumentIngestionError(f"Failed to extract text from '{filename}': {str(e)}")
+
+
+def extract_text_from_file(file_obj: BinaryIO, filename: str) -> str:
+    """
+    Extract text from a file based on its extension.
+    
+    Args:
+        file_obj: Binary file object
+        filename: Name of the file
+        
+    Returns:
+        str: Extracted text content
+        
+    Raises:
+        DocumentIngestionError: If file type is unsupported or extraction fails
+    """
+    file_ext = get_file_extension(filename)
+    
+    logger.info(f"Processing file '{filename}' with extension '{file_ext}'")
+    
+    if file_ext == '.pdf':
+        return extract_text_from_pdf(file_obj, filename)
+    elif file_ext == '.txt':
+        return extract_text_from_txt(file_obj, filename)
+    elif file_ext in ['.xlsx', '.xls', '.csv', '.xlsm']:
+        # Structured data files - should be handled separately
+        raise DocumentIngestionError(
+            f"Structured data file '{filename}' should be processed via structured data parser, not text extraction"
+        )
+    else:
+        raise DocumentIngestionError(
+            f"Unsupported file type '{file_ext}' for file '{filename}'. "
+            f"Supported types: {', '.join(SUPPORTED_FILE_TYPES)}"
+        )
+
+
+def process_structured_data_file(file_obj: BinaryIO, filename: str) -> Tuple[str, Dict[str, Any]]:
+    """
+    Process structured data file (Excel, CSV, tabular PDF) and return markdown representation.
+    
+    This function:
+    1. Parses the file using pandas (no vector embeddings needed)
+    2. Cleans the data while preserving NULL values
+    3. Converts to markdown format for LLM consumption
+    4. Returns both markdown and metadata
+    
+    Args:
+        file_obj: Binary file object
+        filename: Name of the file
+        
+    Returns:
+        Tuple[str, Dict]: (markdown_text, metadata_dict)
+        
+    Raises:
+        DocumentIngestionError: If processing fails
+    """
+    try:
+        if not STRUCTURED_DATA_AVAILABLE:
+            raise DocumentIngestionError("Structured data parser module not available")
+        
+        logger.info(f"Processing structured data file: {filename}")
+        
+        # Parse the file
+        df = parse_structured_file(file_obj, filename)
+        
+        if df is None:
+            raise DocumentIngestionError(f"Could not parse structured data from: {filename}")
+        
+        # Clean while preserving structure
+        df = clean_dataframe(df)
+        
+        if df.empty:
+            raise DocumentIngestionError(f"No data found in file: {filename}")
+        
+        # Convert to markdown
+        markdown_text = dataframe_to_markdown(df, filename)
+        
+        # Get metadata
+        metadata = get_structured_data_summary(df, filename)
+        
+        # Store DataFrame in session state for direct access
+        if 'structured_data' not in st.session_state:
+            st.session_state.structured_data = {}
+        
+        st.session_state.structured_data[filename] = {
+            'dataframe': df,
+            'metadata': metadata,
+            'markdown': markdown_text
+        }
+        
+        logger.info(f"Successfully processed structured data: {len(df)} rows, {len(df.columns)} columns")
+        
+        return markdown_text, metadata
+        
+    except StructuredDataError as e:
+        logger.error(f"Structured data parsing error: {str(e)}")
+        raise DocumentIngestionError(f"Failed to parse structured data: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unexpected error processing structured data '{filename}': {str(e)}")
+        logger.error(traceback.format_exc())
+        raise DocumentIngestionError(f"Structured data processing failed: {str(e)}")
 
 
 def extract_text_from_file(file_obj: BinaryIO, filename: str) -> str:
@@ -480,22 +625,50 @@ def clear_vector_store() -> None:
         raise DocumentIngestionError(f"Failed to clear vector store: {str(e)}")
 
 
-def ingest_documents(uploaded_files: List[BinaryIO]) -> Tuple[int, int]:
+def compute_file_hash(uploaded_files: List[BinaryIO]) -> str:
+    """
+    Compute a combined hash for all uploaded files to detect document changes.
+    
+    Args:
+        uploaded_files: List of uploaded file objects
+        
+    Returns:
+        MD5 hash representing all files
+    """
+    import hashlib
+    
+    hash_content = ""
+    for file_obj in uploaded_files:
+        filename = getattr(file_obj, 'name', 'unknown')
+        file_size = getattr(file_obj, 'size', 0)
+        hash_content += f"{filename}:{file_size};"
+    
+    return hashlib.md5(hash_content.encode()).hexdigest()
+
+
+def ingest_documents(uploaded_files: List[BinaryIO], session_doc_hash: Optional[str] = None) -> Tuple[int, int, str]:
     """
     Extract, chunk, embed, and store document texts in ChromaDB vector database.
     
+    ENHANCED with smart cache handling:
+    - Computes file hash to track document changes
+    - Only clears vector store if documents changed
+    - Returns hash for session tracking
+    
     This function processes multiple document files by:
-    1. Clearing existing vector store data
-    2. Extracting text from each document (PDF/TXT)
-    3. Chunking text into overlapping segments
-    4. Generating embeddings for each chunk
-    5. Storing embeddings with metadata in ChromaDB
+    1. Computing file hash for change detection
+    2. Clearing existing vector store data ONLY if hash changed
+    3. Extracting text from each document (PDF/TXT)
+    4. Chunking text into overlapping segments
+    5. Generating embeddings for each chunk
+    6. Storing embeddings with metadata in ChromaDB
     
     Args:
         uploaded_files: List of uploaded document file objects
+        session_doc_hash: Hash of previously processed documents (from session state)
         
     Returns:
-        Tuple[int, int]: (total_chunks_processed, total_files_processed)
+        Tuple[int, int, str]: (total_chunks_processed, total_files_processed, document_hash)
         
     Raises:
         DocumentIngestionError: If ingestion process fails
@@ -508,8 +681,27 @@ def ingest_documents(uploaded_files: List[BinaryIO]) -> Tuple[int, int]:
         
         logger.info(f"Starting ingestion of {len(uploaded_files)} document files")
         
+        # Compute hash for uploaded files
+        current_hash = compute_file_hash(uploaded_files)
+        logger.info(f"Document hash: {current_hash}")
+        
+        # Check if documents have changed
+        if session_doc_hash and session_doc_hash == current_hash:
+            logger.info("Documents unchanged - using cached embeddings")
+            stats = get_ingestion_stats()
+            return (stats['total_chunks'], stats['total_files'], current_hash)
+        
+        # Documents changed or first upload - clear and re-process
+        if session_doc_hash:
+            logger.info(f"Document hash changed: {session_doc_hash} -> {current_hash}")
+            logger.info("Clearing vector store and re-processing documents")
+        
         # Clear previous data
         clear_vector_store()
+        
+        # Clear structured data from session state
+        if 'structured_data' in st.session_state:
+            st.session_state.structured_data = {}
         
         collection = get_collection()
         
@@ -519,6 +711,7 @@ def ingest_documents(uploaded_files: List[BinaryIO]) -> Tuple[int, int]:
         
         files_processed = 0
         total_chunks = 0
+        structured_files_count = 0
         
         for file_obj in uploaded_files:
             filename = getattr(file_obj, 'name', f'unknown_file_{files_processed}')
@@ -532,7 +725,47 @@ def ingest_documents(uploaded_files: List[BinaryIO]) -> Tuple[int, int]:
                     logger.warning(f"Skipping unsupported file type: {filename} ({file_ext})")
                     continue
                 
-                # Extract text from document
+                # Check if it's a structured data file
+                if STRUCTURED_DATA_AVAILABLE and is_structured_data_file(filename):
+                    logger.info(f"Detected structured data file: {filename}")
+                    
+                    try:
+                        # Process as structured data (no vector embeddings)
+                        markdown_text, metadata = process_structured_data_file(file_obj, filename)
+                        
+                        # Store as a single "chunk" in vector DB for tracking
+                        # But mark it as structured so we know to use direct data access
+                        chunk_id = f"{filename}_structured_data"
+                        
+                        all_texts.append(markdown_text)
+                        all_metadatas.append({
+                            "source": filename,
+                            "file_type": file_ext,
+                            "is_structured": True,
+                            "total_rows": metadata.get('total_rows', 0),
+                            "total_columns": metadata.get('total_columns', 0),
+                            "location_column": metadata.get('location_column', ''),
+                            "chunk_index": 0,
+                            "total_chunks": 1
+                        })
+                        all_ids.append(chunk_id)
+                        
+                        total_chunks += 1
+                        structured_files_count += 1
+                        files_processed += 1
+                        
+                        logger.info(f"Successfully processed structured data '{filename}': "
+                                  f"{metadata.get('total_rows', 0)} rows, "
+                                  f"{metadata.get('total_columns', 0)} columns")
+                        continue
+                        
+                    except Exception as struct_error:
+                        logger.warning(f"Failed to process as structured data: {str(struct_error)}")
+                        logger.warning("Falling back to text extraction")
+                        # Fall through to text extraction
+                        file_obj.seek(0)  # Reset file pointer
+                
+                # Extract text from document (PDF/TXT or failed structured parsing)
                 text = extract_text_from_file(file_obj, filename)
                 
                 # Skip empty files
@@ -584,7 +817,7 @@ def ingest_documents(uploaded_files: List[BinaryIO]) -> Tuple[int, int]:
         )
         
         logger.info(f"Successfully ingested {files_processed} files with {total_chunks} chunks into vector store")
-        return total_chunks, files_processed
+        return total_chunks, files_processed, current_hash
         
     except DocumentIngestionError:
         raise

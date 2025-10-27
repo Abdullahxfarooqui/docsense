@@ -201,11 +201,9 @@ class QueryEngine:
             logger.warning(f"Embedding normalization failed: {str(e)}. Using original embeddings.")
             return embeddings
     
-    @st.cache_data(ttl=1800, show_spinner=False)  # Cache for 30 minutes
-    def retrieve_relevant_chunks(_self, user_query: str) -> List[Dict[str, Any]]:
+    def retrieve_relevant_chunks(self, user_query: str) -> List[Dict[str, Any]]:
         """
         Retrieve the most relevant document chunks from ChromaDB.
-        CACHED to avoid re-searching identical queries.
         
         Args:
             user_query: The user's question
@@ -217,7 +215,7 @@ class QueryEngine:
             retrieval_start = time.time()
             
             # Get collection count
-            collection_count = _self.collection.count()
+            collection_count = self.collection.count()
             logger.info(f"📊 Searching through {collection_count} document chunks")
             
             if collection_count == 0:
@@ -225,7 +223,8 @@ class QueryEngine:
                 return []
             
             # Use ChromaDB's query method for fast text-based search
-            results = _self.collection.query(
+            # This is faster than embedding-based search for small to medium collections
+            results = self.collection.query(
                 query_texts=[user_query],
                 n_results=min(TOP_K_RESULTS, collection_count)
             )
@@ -298,13 +297,12 @@ ANSWER:"""
         
         return prompt
     
-    def stream_answer(self, prompt: str, thinking_placeholder=None) -> Generator[str, None, None]:
+    def stream_answer(self, prompt: str) -> Generator[str, None, None]:
         """
-        Stream the answer from OpenRouter API with retry logic and UX feedback.
+        Stream the answer from OpenRouter API with retry logic.
         
         Args:
             prompt: The formatted prompt for the LLM
-            thinking_placeholder: Streamlit placeholder to clear when streaming starts
             
         Yields:
             Text chunks as they arrive from the API
@@ -312,9 +310,6 @@ ANSWER:"""
         for attempt in range(MAX_RETRIES):
             try:
                 logger.info(f"🤖 Generating answer using {self.model_name} (streaming mode)")
-                
-                # Track time to first token
-                api_call_start = time.time()
                 
                 # Create streaming completion
                 stream = self.client.chat.completions.create(
@@ -325,25 +320,13 @@ ANSWER:"""
                     model=self.model_name,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=self.temperature,
-                    max_tokens=1500,
+                    max_tokens=1500,  # Increased for more detailed answers
                     stream=True
                 )
-                
-                # Track if first token received
-                first_token_received = False
-                first_token_time = None
                 
                 # Stream the response
                 for chunk in stream:
                     if chunk.choices[0].delta.content:
-                        # Clear thinking placeholder on first token
-                        if not first_token_received:
-                            first_token_time = time.time() - api_call_start
-                            logger.info(f"⚡ First token received in {first_token_time:.2f}s")
-                            if thinking_placeholder:
-                                thinking_placeholder.empty()
-                            first_token_received = True
-                        
                         yield chunk.choices[0].delta.content
                 
                 return  # Successful streaming, exit retry loop
@@ -357,8 +340,6 @@ ANSWER:"""
                     time.sleep(wait_time)
                 else:
                     logger.error(f"All {MAX_RETRIES} streaming attempts failed")
-                    if thinking_placeholder:
-                        thinking_placeholder.empty()
                     yield f"\n\n❌ Error: Failed to generate answer after {MAX_RETRIES} attempts. Please try again."
     
     def query_documents(self, user_query: str) -> Tuple[str, List[Dict[str, Any]], Dict[str, float]]:
@@ -408,19 +389,12 @@ ANSWER:"""
             logger.error(f"Query processing failed: {str(e)}")
             raise QueryEngineError(f"Failed to process query: {str(e)}")
     
-    def answer_question_streaming(self, question: str, thinking_placeholder=None, use_documents: bool = True) -> Tuple[Generator[str, None, None], List[Dict[str, Any]], Dict[str, float]]:
+    def answer_question_streaming(self, question: str) -> Tuple[Generator[str, None, None], List[Dict[str, Any]], Dict[str, float]]:
         """
-        Answer a question with streaming response and intelligent context handling.
-        
-        ENHANCED with smart document detection:
-        - Checks if documents are available
-        - Responds without retrieval if no documents or question is generic
-        - Only uses ChromaDB when relevant to uploaded documents
+        Answer a question with streaming response for better UX.
         
         Args:
             question: The user's question
-            thinking_placeholder: Streamlit placeholder for "thinking" message
-            use_documents: Whether to attempt document retrieval (auto-detected)
             
         Returns:
             Tuple of (answer_generator, source_chunks, performance_metrics)
@@ -428,100 +402,30 @@ ANSWER:"""
         try:
             total_start = time.time()
             
-            # Check if documents are available in ChromaDB
-            collection_count = self.collection.count()
-            
-            # SMART DECISION: Should we use documents?
-            if collection_count == 0:
-                # No documents uploaded - respond generically
-                logger.info("No documents in collection - responding without retrieval")
-                if thinking_placeholder:
-                    thinking_placeholder.empty()
-                
-                def generic_response():
-                    generic_prompt = f"""You are DocSense, a helpful AI assistant. The user hasn't uploaded any documents yet.
-
-INSTRUCTIONS:
-• Answer the question naturally and helpfully
-• If the question requires documents, politely inform them to upload relevant files
-• Be conversational and friendly
-• Provide useful information when possible
-
-QUESTION:
-{question}
-
-ANSWER:"""
-                    
-                    yield from self.stream_answer(generic_prompt, None)
-                
-                metrics = {'retrieval_time': 0, 'chunks_used': 0, 'total_time': time.time() - total_start, 'document_used': False}
-                return (generic_response(), [], metrics)
-            
-            # Documents exist - check if question is document-related
-            # Simple heuristic: keywords that suggest document reference
-            doc_keywords = [
-                'document', 'pdf', 'file', 'paper', 'research', 'study', 'report',
-                'article', 'text', 'uploaded', 'provided', 'according to', 'mentioned',
-                'states', 'shows', 'describes', 'explains', 'discusses', 'analyzes'
-            ]
-            
-            question_lower = question.lower()
-            seems_document_related = any(keyword in question_lower for keyword in doc_keywords)
-            
-            # Also check if question is very short/generic (likely not document-specific)
-            is_generic_chat = len(question.split()) <= 3 and not seems_document_related
-            
-            if is_generic_chat and not seems_document_related:
-                # Generic chat question - respond without heavy retrieval
-                logger.info(f"Question appears generic - light retrieval mode: {question[:50]}")
-                if thinking_placeholder:
-                    thinking_placeholder.empty()
-                
-                def light_response():
-                    light_prompt = f"""You are DocSense, a helpful AI assistant.
-
-QUESTION:
-{question}
-
-ANSWER (be brief and friendly):"""
-                    
-                    yield from self.stream_answer(light_prompt, None)
-                
-                metrics = {'retrieval_time': 0, 'chunks_used': 0, 'total_time': time.time() - total_start, 'document_used': False}
-                return (light_response(), [], metrics)
-            
-            # Question seems document-related OR documents exist - do full retrieval
-            logger.info(f"📝 Processing question with document retrieval: {question[:100]}...")
+            # Retrieve chunks and build prompt
+            logger.info(f"📝 Processing question: {question[:100]}...")
             prompt, chunks, metrics = self.query_documents(question)
             
             if not chunks:
-                # No relevant chunks found - inform user
-                if thinking_placeholder:
-                    thinking_placeholder.empty()
-                    
-                def no_chunks_response():
-                    yield "I searched through the uploaded documents but couldn't find relevant information to answer your question. The documents might not contain information on this topic, or you may need to rephrase your question."
-                
-                metrics['document_used'] = True
-                return (no_chunks_response(), [], metrics)
+                # No chunks found
+                def empty_generator():
+                    yield "I couldn't find any relevant information in the uploaded documents to answer your question."
+                return (empty_generator(), [], metrics)
             
-            # Stream the answer with document context
+            # Stream the answer
             generation_start = time.time()
-            answer_stream = self.stream_answer(prompt, thinking_placeholder)
+            answer_stream = self.stream_answer(prompt)
             
-            # Update metrics
+            # Update metrics with generation time (will be approximate)
             metrics['generation_start'] = generation_start
-            metrics['document_used'] = True
             
             return (answer_stream, chunks, metrics)
             
         except Exception as e:
             logger.error(f"Question answering failed: {str(e)}")
-            if thinking_placeholder:
-                thinking_placeholder.empty()
             def error_generator():
                 yield f"❌ Error: {str(e)}"
-            return (error_generator(), [], {'retrieval_time': 0, 'chunks_used': 0, 'total_time': 0, 'document_used': False})
+            return (error_generator(), [], {'retrieval_time': 0, 'chunks_used': 0, 'total_time': 0})
 
 
 # Cached factory function for Streamlit
