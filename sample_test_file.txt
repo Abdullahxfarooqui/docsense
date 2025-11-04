@@ -1,0 +1,25 @@
+Research Assistant Test Document
+
+This is a sample text file to test the multi-format document support in our Research Assistant application.
+
+Key Features:
+- The application now supports both PDF and TXT file formats
+- Uses OpenRouter API for enhanced AI responses
+- Provides semantic search across multiple document types
+- Maintains proper source citations for all answers
+
+Technical Implementation:
+The system uses PyMuPDF for PDF processing and standard text reading for TXT files. All documents are chunked using LangChain's text splitters and stored in ChromaDB for efficient vector-based retrieval.
+
+Testing Instructions:
+1. Upload this TXT file along with any PDF documents
+2. Ask questions about the content
+3. Verify that the system properly identifies sources from both file types
+4. Check that the OpenRouter API integration provides accurate responses
+
+Sample Questions to Test:
+- What file formats does the Research Assistant support?
+- How does the system process different document types?
+- What API does the application use for AI responses?
+
+This document serves as a comprehensive test case for validating the multi-format document processing capabilities of our upgraded Research Assistant system.
