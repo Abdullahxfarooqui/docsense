@@ -95,7 +95,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Main header
-st.markdown('<div class="main-header">🧠 DocSense AI Assistant <span class="version-badge">v2.0</span></div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header">🧠 AI Assistant <span class="version-badge">v2.0</span></div>', unsafe_allow_html=True)
 
 # Initialize session state
 if 'messages' not in st.session_state:
