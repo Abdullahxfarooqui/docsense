@@ -203,7 +203,7 @@ with st.sidebar:
     )
 
 # Main content area
-st.subheader("🤖 DocSense AI Assistant")
+st.subheader("🤖 AI Assistant")
 st.caption(f"{'💬 Chat Mode' if st.session_state.mode == 'chat' else '📚 Document Q&A with Vector Search'}")
 
 # Display chat messages
@@ -308,7 +308,7 @@ with col3:
     st.caption("🧠 FAISS: Vector Search")
 
 # Info expandable
-with st.expander("ℹ️ About DocSense v2"):
+with st.expander("ℹ️ About"):
     st.markdown("""
     ### Features
     - **Vector Search**: FAISS-based semantic embeddings for intelligent document retrieval
