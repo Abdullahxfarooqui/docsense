@@ -145,109 +145,109 @@ with col_toggle:
 # Sidebar (conditionally rendered)
 if show_sidebar:
     with st.sidebar:
-    st.header("⚙️ Settings")
-    
-    # Mode selection
-    st.subheader("Select Mode")
-    mode = st.radio(
-        "Mode",
-        ["💬 Chat Mode", "📚 Document Mode"],
-        index=0 if st.session_state.mode == 'chat' else 1,
-        label_visibility="collapsed"
-    )
-    
-    # Update mode
-    new_mode = 'chat' if mode == "💬 Chat Mode" else 'document'
-    if new_mode != st.session_state.mode:
-        st.session_state.mode = new_mode
-        st.session_state.messages = []
-        st.rerun()
-    
-    # Mode description
-    if st.session_state.mode == 'chat':
-        st.info("💬 **Chat Mode Active**\n\nDirect conversation with GROQ AI")
-    else:
-        st.info("📚 **Document Mode Active**\n\nVector-based Q&A from your documents")
-    
-    st.divider()
-    
-    # Document upload section (only in document mode)
-    if st.session_state.mode == 'document':
-        st.header("📄 Upload Documents")
-        st.caption("Upload PDF or TXT files")
+        st.header("⚙️ Settings")
         
-        uploaded_files = st.file_uploader(
-            "Choose files",
-            type=['pdf', 'txt'],
-            accept_multiple_files=True,
+        # Mode selection
+        st.subheader("Select Mode")
+        mode = st.radio(
+            "Mode",
+            ["💬 Chat Mode", "📚 Document Mode"],
+            index=0 if st.session_state.mode == 'chat' else 1,
             label_visibility="collapsed"
         )
         
-        if uploaded_files:
-            if st.button("🚀 Process Documents", use_container_width=True):
-                # Update status to processing
-                st.session_state.rag_status = 'processing'
-                
-                progress_bar = st.progress(0)
-                progress_text = st.empty()
-                
-                def update_progress(current, total, message):
-                    if total > 0:
-                        progress = int((current / total) * 100)
-                        progress_bar.progress(progress)
-                        progress_text.text(f"{message} ({current}/{total})")
-                
-                try:
-                    success = process_documents_with_embeddings(
-                        uploaded_files,
-                        progress_callback=update_progress
-                    )
+        # Update mode
+        new_mode = 'chat' if mode == "💬 Chat Mode" else 'document'
+        if new_mode != st.session_state.mode:
+            st.session_state.mode = new_mode
+            st.session_state.messages = []
+            st.rerun()
+        
+        # Mode description
+        if st.session_state.mode == 'chat':
+            st.info("💬 **Chat Mode Active**\n\nDirect conversation with GROQ AI")
+        else:
+            st.info("📚 **Document Mode Active**\n\nVector-based Q&A from your documents")
+        
+        st.divider()
+        
+        # Document upload section (only in document mode)
+        if st.session_state.mode == 'document':
+            st.header("📄 Upload Documents")
+            st.caption("Upload PDF or TXT files")
+            
+            uploaded_files = st.file_uploader(
+                "Choose files",
+                type=['pdf', 'txt'],
+                accept_multiple_files=True,
+                label_visibility="collapsed"
+            )
+            
+            if uploaded_files:
+                if st.button("🚀 Process Documents", use_container_width=True):
+                    # Update status to processing
+                    st.session_state.rag_status = 'processing'
                     
-                    if success:
-                        st.session_state.documents_loaded = True
-                        st.session_state.rag_status = 'processed'  # Mark as processed for auto-hide
-                        progress_bar.progress(100)
-                        progress_text.text("✅ Complete!")
+                    progress_bar = st.progress(0)
+                    progress_text = st.empty()
+                    
+                    def update_progress(current, total, message):
+                        if total > 0:
+                            progress = int((current / total) * 100)
+                            progress_bar.progress(progress)
+                            progress_text.text(f"{message} ({current}/{total})")
+                    
+                    try:
+                        success = process_documents_with_embeddings(
+                            uploaded_files,
+                            progress_callback=update_progress
+                        )
                         
-                        # Show stats
-                        vector_store = get_vector_store()
-                        stats = vector_store.get_stats()
-                        
-                        st.success("✓ Documents Loaded")
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("Total Chunks", stats['total_documents'])
-                        with col2:
-                            st.metric("Vectors", stats['vector_count'])
-                        with col3:
-                            st.metric("Dimensions", stats['dimension'])
-                        
-                        with st.expander("📁 Loaded Files"):
-                            for source in stats['sources']:
-                                st.write(f"• {source}")
-                        
-                        st.info("💡 Using semantic embeddings for intelligent search")
-                    else:
+                        if success:
+                            st.session_state.documents_loaded = True
+                            st.session_state.rag_status = 'processed'  # Mark as processed for auto-hide
+                            progress_bar.progress(100)
+                            progress_text.text("✅ Complete!")
+                            
+                            # Show stats
+                            vector_store = get_vector_store()
+                            stats = vector_store.get_stats()
+                            
+                            st.success("✓ Documents Loaded")
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                st.metric("Total Chunks", stats['total_documents'])
+                            with col2:
+                                st.metric("Vectors", stats['vector_count'])
+                            with col3:
+                                st.metric("Dimensions", stats['dimension'])
+                            
+                            with st.expander("📁 Loaded Files"):
+                                for source in stats['sources']:
+                                    st.write(f"• {source}")
+                            
+                            st.info("💡 Using semantic embeddings for intelligent search")
+                        else:
+                            st.session_state.rag_status = 'error'  # Keep sidebar visible on error
+                            st.error("Failed to process documents")
+                            
+                    except Exception as e:
                         st.session_state.rag_status = 'error'  # Keep sidebar visible on error
-                        st.error("Failed to process documents")
-                        
-                except Exception as e:
-                    st.session_state.rag_status = 'error'  # Keep sidebar visible on error
-                    st.error(f"Error: {str(e)}")
-                        
-                finally:
-                    progress_bar.empty()
-                    progress_text.empty()
-    
-    st.divider()
-    
-    # Response settings
-    st.header("🎛️ Response Settings")
-    detail_level = st.select_slider(
-        "Detail Level",
-        options=["Brief", "Detailed"],
-        value="Detailed"
-    )
+                        st.error(f"Error: {str(e)}")
+                            
+                    finally:
+                        progress_bar.empty()
+                        progress_text.empty()
+        
+        st.divider()
+        
+        # Response settings
+        st.header("🎛️ Response Settings")
+        detail_level = st.select_slider(
+            "Detail Level",
+            options=["Brief", "Detailed"],
+            value="Detailed"
+        )
 
 # Main content area
 st.subheader("🤖 AI Assistant")
