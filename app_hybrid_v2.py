@@ -107,8 +107,44 @@ if 'mode' not in st.session_state:
 if 'documents_loaded' not in st.session_state:
     st.session_state.documents_loaded = False
 
-# Sidebar
-with st.sidebar:
+# RAG status tracking for auto-hide sidebar
+if 'rag_status' not in st.session_state:
+    st.session_state.rag_status = 'idle'  # idle, uploading, processing, processed, error
+
+# Manual sidebar toggle override
+if 'sidebar_manual_toggle' not in st.session_state:
+    st.session_state.sidebar_manual_toggle = False
+
+# Auto-hide sidebar after processing (with 300ms delay simulation via rerun counter)
+if 'processing_complete_counter' not in st.session_state:
+    st.session_state.processing_complete_counter = 0
+
+# Determine if sidebar should be shown
+show_sidebar = True
+if st.session_state.rag_status == 'processed' and not st.session_state.sidebar_manual_toggle:
+    # Auto-hide after processing complete (simulate 300ms delay with counter)
+    if st.session_state.processing_complete_counter < 1:
+        st.session_state.processing_complete_counter += 1
+        import time
+        time.sleep(0.3)
+        st.rerun()
+    else:
+        show_sidebar = False
+elif st.session_state.rag_status in ['uploading', 'processing', 'error', 'idle']:
+    show_sidebar = True
+    st.session_state.processing_complete_counter = 0  # Reset counter
+
+# Manual toggle button (always visible in top right)
+col_toggle, col_spacer = st.columns([1, 10])
+with col_toggle:
+    if st.button("☰" if not show_sidebar else "✕", key="sidebar_toggle", help="Toggle Sidebar"):
+        st.session_state.sidebar_manual_toggle = not st.session_state.sidebar_manual_toggle
+        show_sidebar = not show_sidebar
+        st.rerun()
+
+# Sidebar (conditionally rendered)
+if show_sidebar:
+    with st.sidebar:
     st.header("⚙️ Settings")
     
     # Mode selection
@@ -149,6 +185,9 @@ with st.sidebar:
         
         if uploaded_files:
             if st.button("🚀 Process Documents", use_container_width=True):
+                # Update status to processing
+                st.session_state.rag_status = 'processing'
+                
                 progress_bar = st.progress(0)
                 progress_text = st.empty()
                 
@@ -166,6 +205,7 @@ with st.sidebar:
                     
                     if success:
                         st.session_state.documents_loaded = True
+                        st.session_state.rag_status = 'processed'  # Mark as processed for auto-hide
                         progress_bar.progress(100)
                         progress_text.text("✅ Complete!")
                         
@@ -187,6 +227,13 @@ with st.sidebar:
                                 st.write(f"• {source}")
                         
                         st.info("💡 Using semantic embeddings for intelligent search")
+                    else:
+                        st.session_state.rag_status = 'error'  # Keep sidebar visible on error
+                        st.error("Failed to process documents")
+                        
+                except Exception as e:
+                    st.session_state.rag_status = 'error'  # Keep sidebar visible on error
+                    st.error(f"Error: {str(e)}")
                         
                 finally:
                     progress_bar.empty()
