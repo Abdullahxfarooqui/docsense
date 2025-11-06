@@ -344,15 +344,27 @@ if prompt := st.chat_input("Ask me anything..."):
             logger.error(f"Chat error: {str(e)}", exc_info=True)
             st.session_state.messages.append({"role": "assistant", "content": error_msg})
 
-# Footer
+# Footer - rotating ready messages
+import random
+import time
+
 st.divider()
-col1, col2, col3 = st.columns(3)
-with col1:
-    st.caption("🤖 GROQ: Answer Generation")
-with col2:
-    st.caption("🔍 Mistral: Document Retrieval")
-with col3:
-    st.caption("🧠 FAISS: Vector Search")
+if 'ready_message_index' not in st.session_state:
+    st.session_state.ready_message_index = 0
+    st.session_state.last_message_time = time.time()
+
+ready_messages = [
+    "✨ Ready when you are",
+    "💡 How can I help you today?",
+    "🚀 Ready to assist"
+]
+
+# Rotate message every 5 seconds
+if time.time() - st.session_state.last_message_time > 5:
+    st.session_state.ready_message_index = (st.session_state.ready_message_index + 1) % len(ready_messages)
+    st.session_state.last_message_time = time.time()
+
+st.caption(ready_messages[st.session_state.ready_message_index])
 
 # Info expandable
 with st.expander("ℹ️ About"):
