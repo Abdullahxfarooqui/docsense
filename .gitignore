@@ -69,5 +69,9 @@ secrets.json
 uploads/
 temp_uploads/
 
+# Persistent data storage (contains user documents and vector store)
+data/
+*.pkl
+
 # Cache
 .cache/

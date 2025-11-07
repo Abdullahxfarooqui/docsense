@@ -33,6 +33,14 @@ try:
     from document_engine import process_documents_with_embeddings
     from vector_store import get_vector_store
     from table_formatter import display_response_with_visuals, extract_numerical_data
+    from document_persistence import (
+        ensure_data_folder,
+        get_existing_documents,
+        save_multiple_files,
+        load_document_from_path,
+        get_document_stats,
+        should_rebuild_vectors
+    )
 except ImportError as e:
     st.error(f"Failed to import modules: {str(e)}")
     st.stop()
@@ -107,6 +115,48 @@ if 'mode' not in st.session_state:
 if 'documents_loaded' not in st.session_state:
     st.session_state.documents_loaded = False
 
+# Track auto-loaded documents
+if 'auto_loaded' not in st.session_state:
+    st.session_state.auto_loaded = False
+
+# Auto-load existing documents on first run
+if not st.session_state.auto_loaded and st.session_state.mode == 'document':
+    ensure_data_folder()
+    existing_docs = get_existing_documents()
+    
+    if existing_docs:
+        logger.info(f"Auto-loading {len(existing_docs)} existing documents")
+        
+        # Check if vectors need rebuilding
+        needs_rebuild = should_rebuild_vectors(existing_docs)
+        
+        if needs_rebuild:
+            # Load documents and rebuild vectors
+            file_objects = [load_document_from_path(doc) for doc in existing_docs]
+            
+            try:
+                success = process_documents_with_embeddings(
+                    file_objects,
+                    progress_callback=None
+                )
+                
+                if success:
+                    st.session_state.documents_loaded = True
+                    st.session_state.rag_status = 'processed'
+                    logger.info(f"Successfully auto-loaded {len(existing_docs)} documents")
+                else:
+                    logger.error("Failed to auto-load documents")
+            except Exception as e:
+                logger.error(f"Error auto-loading documents: {str(e)}")
+        else:
+            # Vector store is up to date, just mark as loaded
+            st.session_state.documents_loaded = True
+            st.session_state.rag_status = 'processed'
+            logger.info(f"Using existing vector store for {len(existing_docs)} documents")
+    
+    st.session_state.auto_loaded = True
+
+
 # RAG status tracking for auto-hide sidebar
 if 'rag_status' not in st.session_state:
     st.session_state.rag_status = 'idle'  # idle, uploading, processing, processed, error
@@ -174,7 +224,27 @@ if show_sidebar:
         # Document upload section (only in document mode)
         if st.session_state.mode == 'document':
             st.header("📄 Upload Documents")
-            st.caption("Upload PDF or TXT files")
+            
+            # Show existing documents status
+            existing_docs = get_existing_documents()
+            if existing_docs:
+                stats = get_document_stats()
+                st.success(f"✓ {stats['count']} document(s) loaded ({stats['total_size_mb']} MB)")
+                
+                with st.expander(f"📁 Stored Documents ({stats['count']})"):
+                    for filename in stats['files']:
+                        col1, col2 = st.columns([4, 1])
+                        with col1:
+                            st.write(f"• {filename}")
+                        with col2:
+                            if st.button("🗑️", key=f"del_{filename}", help=f"Delete {filename}"):
+                                from document_persistence import delete_document, clear_all_documents
+                                delete_document(filename)
+                                st.session_state.documents_loaded = False
+                                st.session_state.rag_status = 'idle'
+                                st.rerun()
+            
+            st.caption("Upload new PDF or TXT files")
             
             uploaded_files = st.file_uploader(
                 "Choose files",
@@ -184,7 +254,18 @@ if show_sidebar:
             )
             
             if uploaded_files:
+                # Check if any files are new
+                existing_names = [doc.name for doc in existing_docs]
+                new_files = [f for f in uploaded_files if f.name not in existing_names]
+                
+                if new_files:
+                    st.info(f"📤 {len(new_files)} new file(s) ready to upload")
+                
                 if st.button("🚀 Process Documents", use_container_width=True):
+                    # Save files to data folder first
+                    st.info("💾 Saving files to persistent storage...")
+                    saved_paths = save_multiple_files(uploaded_files)
+                    
                     # Update status to processing
                     st.session_state.rag_status = 'processing'
                     
@@ -213,7 +294,7 @@ if show_sidebar:
                             vector_store = get_vector_store()
                             stats = vector_store.get_stats()
                             
-                            st.success("✓ Documents Loaded")
+                            st.success("✓ Documents Saved & Vectorized")
                             col1, col2, col3 = st.columns(3)
                             with col1:
                                 st.metric("Total Chunks", stats['total_documents'])
@@ -226,7 +307,7 @@ if show_sidebar:
                                 for source in stats['sources']:
                                     st.write(f"• {source}")
                             
-                            st.info("💡 Using semantic embeddings for intelligent search")
+                            st.info("💡 Documents will auto-load on next app start")
                         else:
                             st.session_state.rag_status = 'error'  # Keep sidebar visible on error
                             st.error("Failed to process documents")

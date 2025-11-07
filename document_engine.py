@@ -225,6 +225,14 @@ All volumes are measured in barrels (bbl).
         logger.info(f"Adding {len(all_docs)} total documents to vector store")
         vector_store.add_documents(all_docs)
         
+        # Save vector store to disk for persistence
+        from pathlib import Path
+        data_folder = Path("data")
+        data_folder.mkdir(exist_ok=True)
+        vector_store_path = data_folder / "vector_store.pkl"
+        vector_store.save(str(vector_store_path))
+        logger.info(f"✓ Vector store saved to {vector_store_path}")
+        
         logger.info("✓ Processing complete with vector embeddings!")
         st.success(f"✓ Processed {len(uploaded_files)} files ({len(all_docs)} chunks with embeddings)")
         return True

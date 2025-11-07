@@ -226,10 +226,20 @@ class VectorDocumentStore:
 
 
 def get_vector_store() -> VectorDocumentStore:
-    """Get or create vector store instance (singleton pattern)."""
+    """Get or create vector store instance (singleton pattern with auto-load)."""
     import streamlit as st
+    from pathlib import Path
     
     if 'vector_store' not in st.session_state:
         st.session_state.vector_store = VectorDocumentStore()
+        
+        # Try to auto-load from disk
+        vector_store_path = Path("data/vector_store.pkl")
+        if vector_store_path.exists():
+            try:
+                st.session_state.vector_store.load(str(vector_store_path))
+                logger.info("✓ Auto-loaded vector store from disk")
+            except Exception as e:
+                logger.warning(f"Failed to auto-load vector store: {e}")
     
     return st.session_state.vector_store
