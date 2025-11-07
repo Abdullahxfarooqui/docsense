@@ -108,12 +108,18 @@ st.markdown('<div class="main-header">🧠 AI Assistant <span class="version-bad
 # Initialize session state
 if 'messages' not in st.session_state:
     st.session_state.messages = []
+    logger.info("Initialized messages in session state")
 
 if 'mode' not in st.session_state:
     st.session_state.mode = 'chat'
+    logger.info("Initialized mode in session state")
 
 if 'documents_loaded' not in st.session_state:
     st.session_state.documents_loaded = False
+
+# Debug flag
+if 'debug_mode' not in st.session_state:
+    st.session_state.debug_mode = False
 
 # Track auto-loaded documents
 if 'auto_loaded' not in st.session_state:
@@ -329,10 +335,36 @@ if show_sidebar:
             options=["Brief", "Detailed"],
             value="Detailed"
         )
+        
+        # Debug panel
+        with st.expander("🔧 Debug Info"):
+            st.session_state.debug_mode = st.checkbox("Enable Debug Mode", value=st.session_state.debug_mode)
+            
+            if st.session_state.debug_mode:
+                st.write("**Session State:**")
+                st.write(f"- Messages: {len(st.session_state.messages)}")
+                st.write(f"- Mode: {st.session_state.mode}")
+                st.write(f"- Documents Loaded: {st.session_state.documents_loaded}")
+                st.write(f"- RAG Status: {st.session_state.rag_status}")
+                
+                if st.session_state.documents_loaded:
+                    try:
+                        vector_store = get_vector_store()
+                        stats = vector_store.get_stats()
+                        st.write(f"- Vector Store Docs: {stats['total_documents']}")
+                    except Exception as e:
+                        st.write(f"- Vector Store Error: {str(e)}")
 
 # Main content area
-st.subheader("🤖 AI Assistant")
-st.caption(f"{'💬 Chat Mode' if st.session_state.mode == 'chat' else '📚 Document Q&A with Vector Search'}")
+col1, col2 = st.columns([6, 1])
+with col1:
+    st.subheader("🤖 AI Assistant")
+    st.caption(f"{'💬 Chat Mode' if st.session_state.mode == 'chat' else '📚 Document Q&A with Vector Search'}")
+with col2:
+    # Clear chat button
+    if st.session_state.messages and st.button("🗑️ Clear", help="Clear chat history"):
+        st.session_state.messages = []
+        st.rerun()
 
 # Show welcome message when no chat history
 if len(st.session_state.messages) == 0:
@@ -351,6 +383,7 @@ if len(st.session_state.messages) == 0:
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         if message["role"] == "assistant" and st.session_state.mode == 'document':
+            # Check if response contains numerical data for visualization
             df = extract_numerical_data(message["content"])
             if df is not None and not df.empty:
                 display_response_with_visuals(message["content"], show_charts=True)
@@ -359,84 +392,128 @@ for message in st.session_state.messages:
         else:
             st.markdown(message["content"])
 
-# Chat input
+# Chat input with proper error handling
 if prompt := st.chat_input("Ask me anything..."):
     # Check if documents are needed
     if st.session_state.mode == 'document' and not st.session_state.documents_loaded:
         st.warning("⚠️ Please upload and process documents first!")
         st.stop()
     
-    # Add user message
+    # Add user message to history immediately
     st.session_state.messages.append({"role": "user", "content": prompt})
     
+    # Display user message
     with st.chat_message("user"):
         st.markdown(prompt)
     
-    # Generate response
+    # Generate response with loading feedback
     with st.chat_message("assistant"):
         response_placeholder = st.empty()
         full_response = ""
         
         try:
-            if st.session_state.mode == 'chat':
-                # Chat Mode: Pure GROQ conversation
-                chat_engine = get_chat_mode()
+            # Show loading spinner
+            with st.spinner("🔍 Processing your query..."):
+                if st.session_state.mode == 'chat':
+                    # Chat Mode: Pure GROQ conversation
+                    try:
+                        chat_engine = get_chat_mode()
+                        
+                        chat_history = []
+                        for msg in st.session_state.messages[:-1]:
+                            chat_history.append({
+                                "role": msg["role"],
+                                "content": msg["content"]
+                            })
+                        
+                        # Stream response
+                        for chunk in chat_engine.stream_response(
+                            prompt,
+                            detail_level.lower(),
+                            chat_history
+                        ):
+                            full_response += chunk
+                            response_placeholder.markdown(full_response + "▌")
+                    
+                    except Exception as e:
+                        logger.error(f"Chat mode error: {str(e)}", exc_info=True)
+                        raise Exception(f"Chat engine failed: {str(e)}")
                 
-                chat_history = []
-                for msg in st.session_state.messages[:-1]:
-                    chat_history.append({
-                        "role": msg["role"],
-                        "content": msg["content"]
-                    })
-                
-                for chunk in chat_engine.stream_response(
-                    prompt,
-                    detail_level.lower(),
-                    chat_history
-                ):
-                    full_response += chunk
-                    response_placeholder.markdown(full_response + "▌")
-                
-            else:
-                # Document Mode: Vector search + Mistral + GROQ
-                vector_store = get_vector_store()
-                query_engine = get_hybrid_query_engine()
-                
-                # Semantic + keyword search
-                relevant_docs = vector_store.semantic_search(
-                    prompt,
-                    top_k=5,
-                    keyword_boost=0.3
-                )
-                
-                if not relevant_docs:
-                    full_response = "❌ No relevant documents found. Please upload documents related to your question."
                 else:
-                    # Use hybrid query engine
-                    for chunk in query_engine.query(
-                        prompt,
-                        relevant_docs,
-                        detail_level.lower()
-                    ):
-                        full_response += chunk
-                        response_placeholder.markdown(full_response + "▌")
+                    # Document Mode: Vector search + Mistral + GROQ
+                    try:
+                        vector_store = get_vector_store()
+                        
+                        # Check if vector store has documents
+                        stats = vector_store.get_stats()
+                        if stats['total_documents'] == 0:
+                            raise Exception("No documents in vector store. Please upload and process documents first.")
+                        
+                        # Semantic + keyword search
+                        relevant_docs = vector_store.semantic_search(
+                            prompt,
+                            top_k=5,
+                            keyword_boost=0.3
+                        )
+                        
+                        if not relevant_docs:
+                            full_response = "❌ No relevant documents found. Please try rephrasing your question or upload documents related to your query."
+                        else:
+                            # Use hybrid query engine
+                            query_engine = get_hybrid_query_engine()
+                            
+                            for chunk in query_engine.query(
+                                prompt,
+                                relevant_docs,
+                                detail_level.lower()
+                            ):
+                                full_response += chunk
+                                response_placeholder.markdown(full_response + "▌")
+                    
+                    except Exception as e:
+                        logger.error(f"Document mode error: {str(e)}", exc_info=True)
+                        raise Exception(f"Document retrieval failed: {str(e)}")
             
-            # Final response with visual formatting
+            # Remove cursor and display final response
             response_placeholder.empty()
             
-            df = extract_numerical_data(full_response)
-            if df is not None and not df.empty and st.session_state.mode == 'document':
-                display_response_with_visuals(full_response, show_charts=True)
+            # Check for numerical data and display with visuals if available
+            if st.session_state.mode == 'document':
+                df = extract_numerical_data(full_response)
+                if df is not None and not df.empty:
+                    display_response_with_visuals(full_response, show_charts=True)
+                else:
+                    st.markdown(full_response)
             else:
                 st.markdown(full_response)
             
+            # Save assistant response to history
             st.session_state.messages.append({"role": "assistant", "content": full_response})
             
         except Exception as e:
-            error_msg = f"❌ Error: {str(e)}"
-            response_placeholder.error(error_msg)
-            logger.error(f"Chat error: {str(e)}", exc_info=True)
+            # Display error prominently
+            error_msg = f"❌ **Error:** {str(e)}"
+            response_placeholder.empty()
+            st.error(error_msg)
+            
+            # Log detailed error
+            logger.error(f"Query processing error: {str(e)}", exc_info=True)
+            
+            # Save error to history
             st.session_state.messages.append({"role": "assistant", "content": error_msg})
+            
+            # Show troubleshooting tips
+            with st.expander("🔧 Troubleshooting"):
+                st.markdown("""
+                **Common issues:**
+                - **No documents loaded:** Upload and process documents in the sidebar
+                - **Vector store empty:** Click "🚀 Process Documents" after uploading
+                - **Connection error:** Check your API keys in `.env` file
+                - **Model error:** Try switching between Chat and Document mode
+                """)
+    
+    # Force rerun to display the new messages properly
+    st.rerun()
 
 # Footer
 st.divider()
