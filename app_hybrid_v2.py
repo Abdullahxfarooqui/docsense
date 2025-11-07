@@ -117,6 +117,10 @@ if 'mode' not in st.session_state:
 if 'documents_loaded' not in st.session_state:
     st.session_state.documents_loaded = False
 
+# Detail level setting
+if 'detail_level' not in st.session_state:
+    st.session_state.detail_level = "Detailed"
+
 # Debug flag
 if 'debug_mode' not in st.session_state:
     st.session_state.debug_mode = False
@@ -330,10 +334,10 @@ if show_sidebar:
         
         # Response settings
         st.header("🎛️ Response Settings")
-        detail_level = st.select_slider(
+        st.session_state.detail_level = st.select_slider(
             "Detail Level",
             options=["Brief", "Detailed"],
-            value="Detailed"
+            value=st.session_state.get("detail_level", "Detailed")
         )
         
         # Debug panel
@@ -429,7 +433,7 @@ if prompt := st.chat_input("Ask me anything..."):
                         # Stream response
                         for chunk in chat_engine.stream_response(
                             prompt,
-                            detail_level.lower(),
+                            st.session_state.detail_level.lower(),
                             chat_history
                         ):
                             full_response += chunk
@@ -465,7 +469,7 @@ if prompt := st.chat_input("Ask me anything..."):
                             for chunk in query_engine.query(
                                 prompt,
                                 relevant_docs,
-                                detail_level.lower()
+                                st.session_state.detail_level.lower()
                             ):
                                 full_response += chunk
                                 response_placeholder.markdown(full_response + "▌")
