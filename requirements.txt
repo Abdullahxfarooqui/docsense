@@ -2,6 +2,9 @@
 # Core Streamlit and Web Framework
 streamlit>=1.30.0
 
+# HTTP Client (Python 3.13+ compatible)
+httpx>=0.27.0
+
 # PDF Processing
 pypdf>=6.1.0
 
