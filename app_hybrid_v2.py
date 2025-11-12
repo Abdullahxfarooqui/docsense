@@ -135,12 +135,13 @@ if not st.session_state.auto_loaded and st.session_state.mode == 'document':
     existing_docs = get_existing_documents()
     
     if existing_docs:
-        logger.info(f"Auto-loading {len(existing_docs)} existing documents")
+        logger.info(f"🔍 Checking for existing vector store...")
         
         # Check if vectors need rebuilding
         needs_rebuild = should_rebuild_vectors(existing_docs)
         
         if needs_rebuild:
+            logger.info(f"⚙️ Rebuilding embeddings for {len(existing_docs)} documents")
             # Load documents and rebuild vectors
             file_objects = [load_document_from_path(doc) for doc in existing_docs]
             
@@ -153,16 +154,30 @@ if not st.session_state.auto_loaded and st.session_state.mode == 'document':
                 if success:
                     st.session_state.documents_loaded = True
                     st.session_state.rag_status = 'processed'
-                    logger.info(f"Successfully auto-loaded {len(existing_docs)} documents")
+                    logger.info(f"✅ Successfully rebuilt vector store for {len(existing_docs)} documents")
                 else:
-                    logger.error("Failed to auto-load documents")
+                    logger.error("❌ Failed to rebuild vector store")
             except Exception as e:
-                logger.error(f"Error auto-loading documents: {str(e)}")
+                logger.error(f"❌ Error rebuilding vector store: {str(e)}")
         else:
-            # Vector store is up to date, just mark as loaded
-            st.session_state.documents_loaded = True
-            st.session_state.rag_status = 'processed'
-            logger.info(f"Using existing vector store for {len(existing_docs)} documents")
+            # Vector store exists and is up to date - just load it
+            logger.info(f"✅ Loaded existing vector store for {len(existing_docs)} documents")
+            
+            # Verify vector store loaded correctly
+            try:
+                vector_store = get_vector_store()
+                stats = vector_store.get_stats()
+                
+                if stats['total_documents'] > 0:
+                    st.session_state.documents_loaded = True
+                    st.session_state.rag_status = 'processed'
+                    logger.info(f"✅ Vector store ready: {stats['total_documents']} chunks, {stats['vector_count']} vectors")
+                else:
+                    logger.warning("⚠️ Vector store is empty, will rebuild on next upload")
+            except Exception as e:
+                logger.error(f"❌ Error verifying vector store: {str(e)}")
+    else:
+        logger.info("📁 No existing documents found in data/ folder")
     
     st.session_state.auto_loaded = True
 
