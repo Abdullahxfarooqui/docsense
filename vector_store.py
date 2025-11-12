@@ -183,8 +183,12 @@ class VectorDocumentStore:
             logger.warning("No vectors to save")
             return
         
+        # Ensure filepath has .pkl extension (don't double it)
+        if not filepath.endswith('.pkl'):
+            filepath = f"{filepath}.pkl"
+        
         # Save vectorizer, vectors, and documents
-        with open(f"{filepath}.pkl", 'wb') as f:
+        with open(filepath, 'wb') as f:
             pickle.dump({
                 'documents': self.documents,
                 'vectorizer': self.vectorizer,
